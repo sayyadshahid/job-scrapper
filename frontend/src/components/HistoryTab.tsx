@@ -53,7 +53,7 @@ export default function HistoryTab() {
         </div>
       ) : (
         <div className="sessions-list">
-          {Object.entries(groupedSessions).map(([session, sessionJobs], sIdx) => {
+          {(Object.entries(groupedSessions) as [string, any[]][]).map(([session, sessionJobs], sIdx) => {
             const isExpanded = expandedSession === session;
             return (
               <div key={sIdx} className="session-card" style={{ marginBottom: '1rem', border: '1px solid var(--border)', borderRadius: '8px', background: '#fff', overflow: 'hidden' }}>

@@ -65,7 +65,16 @@ export default function Sidebar({ activeTab, setActiveTab, onSearch, loading }: 
               <option value="naukri">Naukri</option>
               <option value="indeed">Indeed</option>
               <option value="glassdoor">Glassdoor</option>
-              <option value="google">Google Jobs</option>
+              <option value="unstop">Unstop</option>
+              <option value="workindia">WorkIndia</option>
+              <option value="internshala">Internshala</option>
+              <option value="shine">Shine</option>
+              <option value="timesjobs">TimesJobs</option>
+              <option value="foundit">FoundIt</option>
+              <option value="wellfound">Wellfound</option>
+              <option value="remotive">Remotive (API)</option>
+              <option value="arbeitnow">Arbeitnow (API)</option>
+              <option value="jobicy">Jobicy (API)</option>
             </select>
           </div>
 

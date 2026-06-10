@@ -17,6 +17,7 @@ class ScrapeRequest(BaseModel):
     company_size: Optional[str] = "Any"
     clearance: Optional[str] = "None"
     easy_apply: Optional[bool] = False
+    strict_date_filter: Optional[bool] = False
 
 class JobSchema(BaseModel):
     title: str

@@ -3,8 +3,11 @@ import re
 import urllib.parse
 from urllib.parse import quote
 from datetime import datetime, timezone
-from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import logging
+import html
+import time
 
 import requests
 from bs4 import BeautifulSoup
@@ -67,6 +70,7 @@ def pre_filter_html(html_content: str, target_site: str) -> str:
     if container:
         target_element = container
     else:
+        logger.warning(f"[{target_site}] No listing container found during HTML pre-filtering. Falling back to body/main/root element.")
         target_element = soup.find("main") or soup.find("body") or soup
         
     # 3. Strip all attributes except href on <a> tags (optimized to operate on Element directly)
@@ -146,6 +150,8 @@ def parse_posted_time_to_days(posted_time_str: str) -> float:
         return 999.0
         
     num = numbers[0]
+    if re.search(r'\b\d+\s*m\b', s):
+        return 0.0
     if "day" in s or re.search(r'\b\d+\s*d\b', s):
         return float(num)
     if "week" in s or re.search(r'\b\d+\s*w\b', s):
@@ -155,12 +161,9 @@ def parse_posted_time_to_days(posted_time_str: str) -> float:
     if "year" in s or re.search(r'\b\d+\s*y\b', s):
         return float(num * 365)
         
-    if "m" in s:
-        return 0.0
-        
     return 999.0
 
-def filter_jobs_by_date(jobs: list, date_posted: str) -> list:
+def filter_jobs_by_date(jobs: list, date_posted: str, strict_date_filter: bool = False) -> list:
     if not date_posted or date_posted == "Any":
         return jobs
         
@@ -176,8 +179,11 @@ def filter_jobs_by_date(jobs: list, date_posted: str) -> list:
     for job in jobs:
         posted_time = job.get("posted_time")
         if not posted_time:
-            filtered.append(job)
-            continue
+            if strict_date_filter:
+                continue
+            else:
+                filtered.append(job)
+                continue
             
         days = parse_posted_time_to_days(str(posted_time))
         if days <= max_days:
@@ -208,9 +214,10 @@ def fetch_api_jobs(platform: str, req: schemas.ScrapeRequest) -> list:
                     "company": r.get("company_name"),
                     "location": r.get("candidate_required_location") or "Remote",
                     "salary": r.get("salary"),
-                    "description": truncate_words(r.get("description", "")),
+                    "description": r.get("description", ""),
                     "application_link": r.get("url"),
                     "posted_time": posted_time_str,
+                    "source": platform,
                 })
                 
         elif platform == "arbeitnow":
@@ -234,17 +241,20 @@ def fetch_api_jobs(platform: str, req: schemas.ScrapeRequest) -> list:
                         "company": r.get("company_name"),
                         "location": r.get("location"),
                         "salary": None,
-                        "description": truncate_words(r.get("description", "")),
+                        "description": r.get("description", ""),
                         "application_link": r.get("url"),
                         "posted_time": posted_time_str,
+                        "source": platform,
                     })
                 # Check if we have 10 matching jobs
-                temp_filtered = filter_jobs_by_date(jobs, req.date_posted)
+                temp_filtered = filter_jobs_by_date(jobs, req.date_posted, req.strict_date_filter)
                 if len(temp_filtered) >= 10:
                     break
                 
         elif platform == "jobicy":
-            url = "https://jobicy.com/?feed=job_feed&job_categories=dev&search_region=india"
+            # Dynamic job category based on req.role
+            role_cat = quote(req.role.lower().replace(' ', '-'), safe='')
+            url = f"https://jobicy.com/?feed=job_feed&job_categories={role_cat}&search_region=india"
             feed = feedparser.parse(url)
             for entry in feed.entries:
                 title = entry.get("title", "")
@@ -258,9 +268,10 @@ def fetch_api_jobs(platform: str, req: schemas.ScrapeRequest) -> list:
                         "company": entry.get("author"),
                         "location": "India (Remote/Hybrid)",
                         "salary": None,
-                        "description": truncate_words(summary),
+                        "description": summary,
                         "application_link": entry.get("link"),
                         "posted_time": posted_time_str,
+                        "source": platform,
                     })
     except Exception as e:
         logger.error(f"Error fetching API jobs for {platform}: {e}", exc_info=True)
@@ -288,21 +299,30 @@ def scrape_jobs(req: schemas.ScrapeRequest):
                 return []
                 
         with ThreadPoolExecutor(max_workers=len(platforms)) as executor:
-            results = executor.map(scrape_single_platform, platforms)
-            for res in results:
-                all_jobs.extend(res)
+            try:
+                results = executor.map(scrape_single_platform, platforms, timeout=120)
+                while True:
+                    try:
+                        res = next(results)
+                        all_jobs.extend(res)
+                    except StopIteration:
+                        break
+                    except concurrent.futures.TimeoutError as te:
+                        logger.warning(f"Parallel scraping hit the 120s timeout limit: {te}")
+                        break
+            except Exception as e:
+                logger.error(f"Error during parallel scraping execution: {e}", exc_info=True)
         return all_jobs
 
     if target_site in ["remotive", "arbeitnow", "jobicy"]:
         try:
             jobs = fetch_api_jobs(target_site, req)
+            # Apply date filters
+            jobs = filter_jobs_by_date(jobs, req.date_posted, req.strict_date_filter)
+            # Consolidate description truncation
             for job in jobs:
-                job['source'] = target_site
                 if job.get('description'):
-                    words = job['description'].split()
-                    if len(words) > 15:
-                        job['description'] = ' '.join(words[:15]) + '...'
-            jobs = filter_jobs_by_date(jobs, req.date_posted)
+                    job['description'] = truncate_words(job['description'])
             return jobs
         except Exception as e:
             logger.error(f"Failed to fetch API jobs for {target_site}: {e}", exc_info=True)
@@ -355,9 +375,10 @@ def scrape_jobs(req: schemas.ScrapeRequest):
             url = f"https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords={role_q}&txtLocation={loc_q}&sequence_no={page_num}&startPage=1"
         elif target_site == "foundit":
             start = (page_num - 1) * 15
-            url = f"https://www.foundit.in/search/{role_slug}-jobs-in-{loc_slug}?start={start}"
+            url = f"https://www.foundit.in/srp/results?query={role_q}&locations={loc_q}&start={start}"
         elif target_site == "workindia":
-            url = f"https://www.workindia.in/job-search?search={role_q}&city={loc_q}"
+            city_part = f"jobs-in-{loc_slug}" if loc_slug and loc_slug.lower() != "any" else "jobs"
+            url = f"https://www.workindia.in/{city_part}/?search={role_q}"
             if page_num > 1:
                 url += f"&page={page_num}"
         elif target_site == "unstop":
@@ -384,9 +405,9 @@ def scrape_jobs(req: schemas.ScrapeRequest):
                 
                 pseudo_html_parts = []
                 for r in search_results:
-                    title = r.get("title", "")
-                    link = r.get("href", "")
-                    body = r.get("body", "")
+                    title = html.escape(r.get("title", ""))
+                    link = html.escape(r.get("href", ""))
+                    body = html.escape(r.get("body", ""))
                     pseudo_html_parts.append(
                         f'<div class="job-card">'
                         f'  <a href="{link}">{title}</a>'
@@ -403,22 +424,32 @@ def scrape_jobs(req: schemas.ScrapeRequest):
 
         # Fallback to direct requests if search fallback was not used or returned no results
         if not raw_html and not force_chromium:
-            logger.info(f"[{target_site}] Fetching directly via requests with browser headers (Page {page_num})...")
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
                 "Accept-Language": "en-US,en;q=0.9",
                 "Connection": "keep-alive"
             }
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                response.raise_for_status()
-                if len(response.content) > 5_000_000:
-                    raise ValueError("Response too large")
-                raw_html = response.text
-                logger.info(f"[{target_site}] Successfully fetched page content via requests. Size: {len(raw_html)} chars.")
-            except Exception as e:
-                logger.error(f"[{target_site}] Direct requests failed with error: {e}", exc_info=True)
+            max_retries = 3
+            backoff_factor = 2
+            for attempt in range(1, max_retries + 1):
+                try:
+                    logger.info(f"[{target_site}] Fetching directly via requests (Page {page_num}, Attempt {attempt}/{max_retries})...")
+                    response = requests.get(url, headers=headers, timeout=10)
+                    response.raise_for_status()
+                    if len(response.content) > 5_000_000:
+                        raise ValueError("Response too large")
+                    raw_html = response.text
+                    logger.info(f"[{target_site}] Successfully fetched page content via requests. Size: {len(raw_html)} chars.")
+                    break
+                except Exception as e:
+                    logger.error(f"[{target_site}] Direct requests attempt {attempt} failed: {e}")
+                    if attempt < max_retries:
+                        sleep_time = backoff_factor ** attempt
+                        logger.info(f"[{target_site}] Retrying in {sleep_time} seconds...")
+                        time.sleep(sleep_time)
+                    else:
+                        logger.error(f"[{target_site}] All {max_retries} attempts failed for direct requests.", exc_info=True)
 
         # Ultimate fallback to ChromiumLoader if requests and search fallbacks both failed/were skipped
         if not raw_html:
@@ -449,6 +480,8 @@ def scrape_jobs(req: schemas.ScrapeRequest):
             "llm": {
                 "model": "deepseek/deepseek-chat",
                 "api_key": api_key,
+                "temperature": 0,
+                "max_tokens": 4096,
             },
             "verbose": True,
             "headless": True,
@@ -530,10 +563,6 @@ def scrape_jobs(req: schemas.ScrapeRequest):
         page_jobs = []
         for job in jobs:
             job['source'] = target_site
-            if job.get('description'):
-                words = job['description'].split()
-                if len(words) > 15:
-                    job['description'] = ' '.join(words[:15]) + '...'
             
             # De-duplicate
             is_dup = False
@@ -546,7 +575,7 @@ def scrape_jobs(req: schemas.ScrapeRequest):
                 page_jobs.append(job)
 
         # Apply date filters to the new page jobs
-        filtered_page_jobs = filter_jobs_by_date(page_jobs, req.date_posted)
+        filtered_page_jobs = filter_jobs_by_date(page_jobs, req.date_posted, req.strict_date_filter)
         accumulated_jobs.extend(filtered_page_jobs)
         logger.info(f"[{target_site}] Page {page_num} retrieved {len(filtered_page_jobs)} new filtered jobs. Total: {len(accumulated_jobs)}.")
 
@@ -554,6 +583,11 @@ def scrape_jobs(req: schemas.ScrapeRequest):
         if len(accumulated_jobs) >= 10:
             logger.info(f"[{target_site}] Reached {len(accumulated_jobs)} matching jobs (>= 10). Stopping pagination.")
             break
+
+    # Consolidated description truncation post-processing for all retrieved jobs
+    for job in accumulated_jobs:
+        if job.get('description'):
+            job['description'] = truncate_words(job['description'])
 
     return accumulated_jobs
 
@@ -566,6 +600,8 @@ def scrape_contact_info(url: str, company: str = "") -> dict:
         "llm": {
             "model": "deepseek/deepseek-chat",
             "api_key": api_key,
+            "temperature": 0,
+            "max_tokens": 4096,
         },
         "verbose": True,
         "headless": True,
@@ -591,6 +627,7 @@ def scrape_contact_info(url: str, company: str = "") -> dict:
             source_content = res.text
     except Exception as e:
         logger.warning(f"Fast HTTP fetch failed for contact info URL {url}. Falling back to default loader: {e}")
+        logger.info(f"Passing raw URL string '{url}' directly to SmartScraperGraph to let its default internal loader retrieve it.")
 
     smart_scraper_graph = SmartScraperGraph(
         prompt=prompt,

@@ -61,20 +61,29 @@ export default function Sidebar({ activeTab, setActiveTab, onSearch, loading }: 
             <label>Target Site</label>
             <select value={targetSite} onChange={(e) => setTargetSite(e.target.value)}>
               <option value="all">All Platforms</option>
-              <option value="linkedin">LinkedIn</option>
-              <option value="naukri">Naukri</option>
-              <option value="indeed">Indeed</option>
-              <option value="glassdoor">Glassdoor</option>
-              <option value="unstop">Unstop</option>
-              <option value="workindia">WorkIndia</option>
-              <option value="internshala">Internshala</option>
-              <option value="shine">Shine</option>
-              <option value="timesjobs">TimesJobs</option>
-              <option value="foundit">FoundIt</option>
-              <option value="wellfound">Wellfound</option>
-              <option value="remotive">Remotive (API)</option>
-              <option value="arbeitnow">Arbeitnow (API)</option>
-              <option value="jobicy">Jobicy (API)</option>
+              
+              <optgroup label="Remote Portals (API)">
+                <option value="remotive">Remotive</option>
+                <option value="arbeitnow">Arbeitnow</option>
+                <option value="jobicy">Jobicy</option>
+              </optgroup>
+
+              <optgroup label="Indian Portals">
+                <option value="naukri">Naukri</option>
+                <option value="unstop">Unstop</option>
+                <option value="workindia">WorkIndia</option>
+                <option value="internshala">Internshala</option>
+                <option value="shine">Shine</option>
+                <option value="timesjobs">TimesJobs</option>
+              </optgroup>
+
+              <optgroup label="Abroad Portals">
+                <option value="linkedin">LinkedIn</option>
+                <option value="indeed">Indeed</option>
+                <option value="glassdoor">Glassdoor</option>
+                <option value="wellfound">Wellfound</option>
+                <option value="foundit">FoundIt</option>
+              </optgroup>
             </select>
           </div>
 

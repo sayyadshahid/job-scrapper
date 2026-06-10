@@ -12,6 +12,11 @@ export default function SearchResults({ jobs, loading, onClear, sessionContext }
   const [selectedJobIndices, setSelectedJobIndices] = useState<Set<number>>(new Set());
   const [isBulkSaving, setIsBulkSaving] = useState(false);
 
+  const [searchTerm, setSearchTerm] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("All");
+  const [timeFilter, setTimeFilter] = useState("All Time");
+  const [workModeFilter, setWorkModeFilter] = useState("All");
+
   const toggleSelection = (idx: number) => {
     const newSet = new Set(selectedJobIndices);
     if (newSet.has(idx)) newSet.delete(idx);
@@ -38,32 +43,117 @@ export default function SearchResults({ jobs, loading, onClear, sessionContext }
     }
   };
 
+  const uniqueSources = Array.from(new Set(jobs.map(j => j.source))).filter(Boolean);
+
+  const filteredJobs = jobs.map((job, originalIndex) => ({ job, originalIndex })).filter(({ job }) => {
+    if (searchTerm) {
+      const term = searchTerm.toLowerCase();
+      const match = (job.title?.toLowerCase().includes(term)) ||
+                    (job.company?.toLowerCase().includes(term)) ||
+                    (job.description?.toLowerCase().includes(term)) ||
+                    (job.location?.toLowerCase().includes(term));
+      if (!match) return false;
+    }
+
+    if (sourceFilter && sourceFilter !== "All") {
+      if (job.source !== sourceFilter) return false;
+    }
+
+    if (timeFilter && timeFilter !== "All Time") {
+      const pt = job.posted_time?.toLowerCase() || "";
+      if (timeFilter === "Last 24 hours") {
+        if (!pt.includes("hour") && !pt.includes("today") && !pt.includes("now") && !pt.includes("minute") && !pt.includes("second") && pt !== "1 day ago") return false;
+      } else if (timeFilter === "Last 7 days") {
+        if (pt.includes("month") || pt.includes("year") || pt.includes("2 week") || pt.includes("3 week") || pt.includes("4 week")) return false;
+      } else if (timeFilter === "Last 30 days") {
+        if (pt.includes("year") || pt.includes("2 month") || pt.includes("3 month")) return false;
+      }
+    }
+
+    if (workModeFilter && workModeFilter !== "All") {
+      const isRemote = job.location?.toLowerCase().includes("remote") || job.title?.toLowerCase().includes("remote") || job.description?.toLowerCase().includes("remote") || job.location?.toLowerCase().includes("wfh") || job.description?.toLowerCase().includes("wfh");
+      const isHybrid = job.location?.toLowerCase().includes("hybrid") || job.title?.toLowerCase().includes("hybrid") || job.description?.toLowerCase().includes("hybrid");
+      
+      if (workModeFilter === "Remote" && !isRemote) return false;
+      if (workModeFilter === "Hybrid" && !isHybrid) return false;
+      if (workModeFilter === "On-site" && (isRemote || isHybrid)) return false;
+    }
+
+    return true;
+  });
+
+  const isAllFilteredSelected = filteredJobs.length > 0 && filteredJobs.every(f => selectedJobIndices.has(f.originalIndex));
+
   return (
     <>
-      <div className="content-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
-        <h2>Search Results</h2>
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
-          {jobs.length > 0 && (
-            <button 
-              onClick={() => {
-                if (selectedJobIndices.size === jobs.length) {
-                  setSelectedJobIndices(new Set());
-                } else {
-                  setSelectedJobIndices(new Set(jobs.map((_, idx) => idx)));
-                }
-              }} 
-              className="btn-secondary" 
-              style={{ width: 'auto', padding: '0.5rem 1rem' }}
-            >
-              {selectedJobIndices.size === jobs.length ? "Deselect All" : "Select All"}
-            </button>
-          )}
-          {selectedJobIndices.size > 0 && (
-            <button onClick={bulkSave} disabled={isBulkSaving} className="btn-success" style={{ width: 'auto' }}>
-              {isBulkSaving ? "Saving & Analyzing..." : `Save Selected (${selectedJobIndices.size})`}
-            </button>
-          )}
+      <div className="content-header" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '1rem' }}>
+          <h2>Search Results {jobs.length > 0 && `(${filteredJobs.length} visible)`}</h2>
+          <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+            {filteredJobs.length > 0 && (
+              <button 
+                onClick={() => {
+                  const newSet = new Set(selectedJobIndices);
+                  if (isAllFilteredSelected) {
+                    filteredJobs.forEach(f => newSet.delete(f.originalIndex));
+                  } else {
+                    filteredJobs.forEach(f => newSet.add(f.originalIndex));
+                  }
+                  setSelectedJobIndices(newSet);
+                }} 
+                className="btn-secondary" 
+                style={{ width: 'auto', padding: '0.5rem 1rem' }}
+              >
+                {isAllFilteredSelected ? "Deselect All Visible" : "Select All Visible"}
+              </button>
+            )}
+            {selectedJobIndices.size > 0 && (
+              <button onClick={bulkSave} disabled={isBulkSaving} className="btn-success" style={{ width: 'auto' }}>
+                {isBulkSaving ? "Saving & Analyzing..." : `Save Selected (${selectedJobIndices.size})`}
+              </button>
+            )}
+          </div>
         </div>
+
+        {jobs.length > 0 && (
+          <div className="filters-bar" style={{ display: 'flex', gap: '1rem', background: '#f8fafc', padding: '1rem', borderRadius: '8px', flexWrap: 'wrap', border: '1px solid #e2e8f0' }}>
+            <input 
+              type="text" 
+              placeholder="Search title, company, description, location..." 
+              value={searchTerm} 
+              onChange={e => setSearchTerm(e.target.value)} 
+              style={{ flex: '1 1 250px', padding: '0.5rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: '4px', fontSize: '0.9rem' }} 
+            />
+            <select 
+              value={workModeFilter} 
+              onChange={e => setWorkModeFilter(e.target.value)}
+              style={{ padding: '0.5rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: '4px', fontSize: '0.9rem', backgroundColor: '#fff' }}
+            >
+              <option value="All">All Work Modes</option>
+              <option value="Remote">Remote</option>
+              <option value="Hybrid">Hybrid</option>
+              <option value="On-site">On-site</option>
+            </select>
+            <select 
+              value={sourceFilter} 
+              onChange={e => setSourceFilter(e.target.value)}
+              style={{ padding: '0.5rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: '4px', fontSize: '0.9rem', backgroundColor: '#fff' }}
+            >
+              <option value="All">All Platforms</option>
+              {uniqueSources.map(s => <option key={s as string} value={s as string}>{s as string}</option>)}
+            </select>
+            <select 
+              value={timeFilter} 
+              onChange={e => setTimeFilter(e.target.value)}
+              style={{ padding: '0.5rem 0.75rem', border: '1px solid #cbd5e1', borderRadius: '4px', fontSize: '0.9rem', backgroundColor: '#fff' }}
+            >
+              <option value="All Time">All Time</option>
+              <option value="Last 24 hours">Last 24 hours</option>
+              <option value="Last 7 days">Last 7 days</option>
+              <option value="Last 30 days">Last 30 days</option>
+            </select>
+          </div>
+        )}
       </div>
 
       {loading ? (
@@ -73,6 +163,11 @@ export default function SearchResults({ jobs, loading, onClear, sessionContext }
           <h3>No jobs found</h3>
           <p>Try adjusting your search criteria and run a new scrape.</p>
         </div>
+      ) : filteredJobs.length === 0 ? (
+        <div className="empty-state">
+          <h3>No jobs match your filters</h3>
+          <p>Try clearing your search or filter selections.</p>
+        </div>
       ) : (
         <div className="table-container">
           <table>
@@ -81,16 +176,18 @@ export default function SearchResults({ jobs, loading, onClear, sessionContext }
                 <th style={{ width: '5%' }}>
                   <input 
                     type="checkbox" 
-                    checked={jobs.length > 0 && selectedJobIndices.size === jobs.length}
+                    checked={isAllFilteredSelected}
                     onChange={(e) => {
+                      const newSet = new Set(selectedJobIndices);
                       if (e.target.checked) {
-                        setSelectedJobIndices(new Set(jobs.map((_, idx) => idx)));
+                        filteredJobs.forEach(f => newSet.add(f.originalIndex));
                       } else {
-                        setSelectedJobIndices(new Set());
+                        filteredJobs.forEach(f => newSet.delete(f.originalIndex));
                       }
+                      setSelectedJobIndices(newSet);
                     }}
                     style={{ width: '18px', height: '18px', cursor: 'pointer' }}
-                    title="Select All / Deselect All"
+                    title="Select All / Deselect All Visible"
                   />
                 </th>
                 <th style={{ width: '25%' }}>Title & Company</th>
@@ -100,10 +197,10 @@ export default function SearchResults({ jobs, loading, onClear, sessionContext }
               </tr>
             </thead>
             <tbody>
-              {jobs.map((job, idx) => (
-                <tr key={idx} style={{ background: selectedJobIndices.has(idx) ? '#f0fdf4' : '' }}>
+              {filteredJobs.map(({ job, originalIndex }) => (
+                <tr key={originalIndex} style={{ background: selectedJobIndices.has(originalIndex) ? '#f0fdf4' : '' }}>
                   <td>
-                    <input type="checkbox" checked={selectedJobIndices.has(idx)} onChange={() => toggleSelection(idx)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
+                    <input type="checkbox" checked={selectedJobIndices.has(originalIndex)} onChange={() => toggleSelection(originalIndex)} style={{ width: '18px', height: '18px', cursor: 'pointer' }} />
                   </td>
                   <td>
                     <strong style={{ color: 'var(--primary)', fontSize: '1rem' }}>{job.title}</strong><br />

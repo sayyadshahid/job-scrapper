@@ -66,6 +66,18 @@ def pre_filter_html(html_content: str, target_site: str) -> str:
         container = soup.find("div", class_=re.compile("opportunity-list"))
     elif "wellfound" in target_site:
         container = soup.find("div", class_=re.compile("jobs-list"))
+    elif "seek" in target_site:
+        container = soup.find("div", attrs={"data-automation": "searchResults"})
+    elif "stepstone" in target_site:
+        container = soup.find("article", attrs={"data-genesis-element": "BASE"})
+    elif "totaljobs" in target_site:
+        container = (soup.find("article", class_=re.compile("job-card")) or
+                     soup.find("div", class_=re.compile("job-cardstyle")))
+    elif "jobstreet" in target_site:
+        container = soup.find("div", attrs={"data-search-sol-meta": True})
+    elif "eurojobs" in target_site:
+        container = (soup.find("div", class_=re.compile("job-result")) or
+                     soup.find("ul", class_=re.compile("job-list")))
 
     if container:
         target_element = container
@@ -273,6 +285,132 @@ def fetch_api_jobs(platform: str, req: schemas.ScrapeRequest) -> list:
                         "posted_time": posted_time_str,
                         "source": platform,
                     })
+
+        elif platform == "jobbank":
+            loc_q = quote(req.location, safe='')
+            url = f"https://jobbank.gc.ca/api/job-list?searchstring={role_q}&locationstring={loc_q}&sort=M&action=search"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            soup = BeautifulSoup(response.text, "html.parser")
+            for article in soup.find_all("article"):
+                title_tag = article.find("span", class_="noctitle")
+                title = title_tag.get_text(strip=True) if title_tag else None
+                company_tag = article.find("li", class_="business")
+                company = company_tag.get_text(strip=True) if company_tag else None
+                loc_tag = article.find("li", class_="location")
+                location = loc_tag.get_text(strip=True).replace("Location", "").strip() if loc_tag else None
+                link_tag = article.find("a", href=True)
+                link = f"https://jobbank.gc.ca{link_tag['href']}" if link_tag else None
+                date_tag = article.find("li", class_="date")
+                posted_time = date_tag.get_text(strip=True) if date_tag else None
+                
+                if title:
+                    jobs.append({
+                        "title": title,
+                        "company": company,
+                        "location": location,
+                        "salary": None,
+                        "description": "",
+                        "application_link": link,
+                        "posted_time": posted_time,
+                        "source": platform,
+                    })
+
+        elif platform == "themuse":
+            url = f"https://www.themuse.com/api/public/jobs?search={role_q}&page=1&per_page=50"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            raw_jobs = data.get("results", [])
+            for r in raw_jobs:
+                locations = r.get("locations", [])
+                location = locations[0].get("name") if locations else "Unknown"
+                # Filter by req.location if provided
+                req_loc_lower = req.location.lower()
+                if req_loc_lower != "any" and req_loc_lower not in location.lower():
+                    continue
+                
+                company = r.get("company", {}).get("name")
+                refs = r.get("refs", {})
+                link = refs.get("landing_page")
+                posted_time_str = str(r.get("publication_date")) if r.get("publication_date") else None
+                
+                jobs.append({
+                    "title": r.get("name"),
+                    "company": company,
+                    "location": location,
+                    "salary": None,
+                    "description": "",
+                    "application_link": link,
+                    "posted_time": posted_time_str,
+                    "source": platform,
+                })
+
+        elif platform == "jobindex":
+            url = f"https://www.jobindex.dk/jobsoegning.rss?q={role_q}&superjob=1"
+            feed = feedparser.parse(url)
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                summary = entry.get("summary", "")
+                published = entry.get("published")
+                posted_time_str = str(published) if published is not None else None
+                jobs.append({
+                    "title": title,
+                    "company": entry.get("author"),
+                    "location": "Denmark (or specified)",
+                    "salary": None,
+                    "description": summary,
+                    "application_link": entry.get("link"),
+                    "posted_time": posted_time_str,
+                    "source": platform,
+                })
+
+        elif platform == "remoteok":
+            url = f"https://remoteok.com/api?tag={role_q}"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            # Skip first element (legal notice)
+            if data and len(data) > 0:
+                raw_jobs = data[1:]
+                for r in raw_jobs:
+                    date_val = r.get("date")
+                    posted_time_str = str(date_val) if date_val else None
+                    jobs.append({
+                        "title": r.get("position"),
+                        "company": r.get("company"),
+                        "location": r.get("location") or "Remote",
+                        "salary": str(r.get("salary_max", "")) if r.get("salary_max") else None,
+                        "description": r.get("description", ""),
+                        "application_link": r.get("url"),
+                        "posted_time": posted_time_str,
+                        "source": platform,
+                    })
+
+        elif platform == "himalayas":
+            url = f"https://himalayas.app/jobs/api?q={role_q}&limit=50"
+            headers = {"User-Agent": "Mozilla/5.0"}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            raw_jobs = data.get("jobs", [])
+            for r in raw_jobs:
+                pub_val = r.get("publishedAt")
+                posted_time_str = str(pub_val) if pub_val else None
+                company = r.get("companyName")
+                jobs.append({
+                    "title": r.get("title"),
+                    "company": company,
+                    "location": r.get("location") or "Remote",
+                    "salary": str(r.get("salary", "")) if r.get("salary") else None,
+                    "description": r.get("description", ""),
+                    "application_link": r.get("applicationLink"),
+                    "posted_time": posted_time_str,
+                    "source": platform,
+                })
     except Exception as e:
         logger.error(f"Error fetching API jobs for {platform}: {e}", exc_info=True)
         raise
@@ -287,7 +425,9 @@ def scrape_jobs(req: schemas.ScrapeRequest):
         platforms = [
             "linkedin", "naukri", "indeed", "glassdoor",
             "internshala", "shine", "timesjobs", "foundit", "workindia",
-            "unstop", "wellfound", "remotive", "arbeitnow", "jobicy"
+            "unstop", "wellfound", "remotive", "arbeitnow", "jobicy",
+            "jobbank", "themuse", "jobindex", "remoteok", "himalayas",
+            "seek", "stepstone", "totaljobs", "jobstreet", "eurojobs"
         ]
         
         def scrape_single_platform(platform):
@@ -314,7 +454,7 @@ def scrape_jobs(req: schemas.ScrapeRequest):
                 logger.error(f"Error during parallel scraping execution: {e}", exc_info=True)
         return all_jobs
 
-    if target_site in ["remotive", "arbeitnow", "jobicy"]:
+    if target_site in ["remotive", "arbeitnow", "jobicy", "jobbank", "themuse", "jobindex", "remoteok", "himalayas"]:
         try:
             jobs = fetch_api_jobs(target_site, req)
             # Apply date filters
@@ -341,7 +481,7 @@ def scrape_jobs(req: schemas.ScrapeRequest):
 
     accumulated_jobs = []
     is_search_fallback = target_site in ["indeed", "glassdoor", "naukri"]
-    force_chromium = target_site in ["unstop", "wellfound"]
+    force_chromium = target_site in ["unstop", "wellfound", "jobstreet"]
     max_pages = 1 if is_search_fallback else 3
 
     for page_num in range(1, max_pages + 1):
@@ -389,6 +529,16 @@ def scrape_jobs(req: schemas.ScrapeRequest):
             url = f"https://wellfound.com/jobs?q={role_q}&l={loc_q}%2C+India"
             if page_num > 1:
                 url += f"&page={page_num}"
+        elif target_site == "seek":
+            url = f"https://www.seek.com.au/{role_slug}-jobs/in-{loc_slug}?page={page_num}"
+        elif target_site == "stepstone":
+            url = f"https://www.stepstone.de/jobs/{role_slug}/in-{loc_slug}?page={page_num}"
+        elif target_site == "totaljobs":
+            url = f"https://www.totaljobs.com/jobs/{role_slug}/in-{loc_slug}?page={page_num}"
+        elif target_site == "jobstreet":
+            url = f"https://www.jobstreet.com.my/{role_slug}-jobs/in-{loc_slug}?page={page_num}"
+        elif target_site == "eurojobs":
+            url = f"https://www.eurojobs.com/search-results/?keywords={role_q}&location={loc_q}&page={page_num}"
         else:
             url = f"https://www.linkedin.com/jobs/search?keywords={role_q}%20{skills_q}&location={loc_q}"
 

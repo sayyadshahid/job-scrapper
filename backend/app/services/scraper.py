@@ -191,7 +191,8 @@ def fetch_api_jobs(platform: str, req: schemas.ScrapeRequest) -> list:
     
     try:
         if platform == "remotive":
-            url = f"https://remotive.com/api/remote-jobs?search={role_q}&limit=20"
+            # Increase limit to 100 to gather enough jobs for filtering
+            url = f"https://remotive.com/api/remote-jobs?search={role_q}&limit=100"
             headers = {"User-Agent": "Mozilla/5.0"}
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
@@ -213,26 +214,34 @@ def fetch_api_jobs(platform: str, req: schemas.ScrapeRequest) -> list:
                 })
                 
         elif platform == "arbeitnow":
-            url = f"https://www.arbeitnow.com/api/job-board-api?search={role_q}"
-            headers = {"User-Agent": "Mozilla/5.0"}
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            if len(response.content) > 5_000_000:
-                raise ValueError("Response too large")
-            data = response.json()
-            raw_jobs = data.get("data", [])
-            for r in raw_jobs:
-                created_at = r.get("created_at")
-                posted_time_str = str(created_at) if created_at is not None else None
-                jobs.append({
-                    "title": r.get("title"),
-                    "company": r.get("company_name"),
-                    "location": r.get("location"),
-                    "salary": None,
-                    "description": truncate_words(r.get("description", "")),
-                    "application_link": r.get("url"),
-                    "posted_time": posted_time_str,
-                })
+            # Paginate up to 3 pages until at least 10 filtered jobs are retrieved
+            for page in range(1, 4):
+                url = f"https://www.arbeitnow.com/api/job-board-api?search={role_q}&page={page}"
+                headers = {"User-Agent": "Mozilla/5.0"}
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                if len(response.content) > 5_000_000:
+                    raise ValueError("Response too large")
+                data = response.json()
+                raw_jobs = data.get("data", [])
+                if not raw_jobs:
+                    break
+                for r in raw_jobs:
+                    created_at = r.get("created_at")
+                    posted_time_str = str(created_at) if created_at is not None else None
+                    jobs.append({
+                        "title": r.get("title"),
+                        "company": r.get("company_name"),
+                        "location": r.get("location"),
+                        "salary": None,
+                        "description": truncate_words(r.get("description", "")),
+                        "application_link": r.get("url"),
+                        "posted_time": posted_time_str,
+                    })
+                # Check if we have 10 matching jobs
+                temp_filtered = filter_jobs_by_date(jobs, req.date_posted)
+                if len(temp_filtered) >= 10:
+                    break
                 
         elif platform == "jobicy":
             url = "https://jobicy.com/?feed=job_feed&job_categories=dev&search_region=india"
@@ -310,184 +319,243 @@ def scrape_jobs(req: schemas.ScrapeRequest):
     loc_q = quote(req.location, safe='')
     skills_q = quote(req.skills, safe='')
 
-    url_mappings = {
-        "linkedin": f"https://www.linkedin.com/jobs/search?keywords={role_q}%20{skills_q}&location={loc_q}",
-        "naukri": f"https://www.naukri.com/{role_slug}-jobs-in-{loc_slug}?k={role_q}&l={loc_q}",
-        "indeed": f"https://in.indeed.com/jobs?q={role_q}+{skills_q}&l={loc_q}",
-        "glassdoor": f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={role_q}&locT=C&locId={loc_q}",
-        "internshala": f"https://internshala.com/jobs/{role_slug}-jobs-in-{loc_slug}/",
-        "shine": f"https://www.shine.com/job-search/{role_slug}-jobs-in-{loc_slug}/",
-        "timesjobs": f"https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords={role_q}&txtLocation={loc_q}",
-        "foundit": f"https://www.foundit.in/search/{role_slug}-jobs-in-{loc_slug}",
-        "workindia": f"https://www.workindia.in/job-search?search={role_q}&city={loc_q}",
-        "unstop": f"https://unstop.com/jobs?search={role_q}&location={loc_q}",
-        "wellfound": f"https://wellfound.com/jobs?q={role_q}&l={loc_q}%2C+India",
-    }
-
-    url = url_mappings.get(target_site)
-    if not url:
-        raise ValueError(f"Unsupported target site: {target_site}")
-
-    raw_html = ""
+    accumulated_jobs = []
     is_search_fallback = target_site in ["indeed", "glassdoor", "naukri"]
     force_chromium = target_site in ["unstop", "wellfound"]
+    max_pages = 1 if is_search_fallback else 3
 
-    # 1. Fetch raw HTML using hybrid method
-    if is_search_fallback:
-        logger.info(f"[{target_site}] Platform uses strong anti-bot shields. Initiating DuckDuckGo search fallback...")
-        try:
-            query = f"site:{target_site}.com {req.role} {req.location} jobs"
-            with DDGS() as ddgs:
-                search_results = list(ddgs.text(query, max_results=30))
-            
-            pseudo_html_parts = []
-            for r in search_results:
-                title = r.get("title", "")
-                link = r.get("href", "")
-                body = r.get("body", "")
-                pseudo_html_parts.append(
-                    f'<div class="job-card">'
-                    f'  <a href="{link}">{title}</a>'
-                    f'  <p class="description">{body}</p>'
-                    f'</div>'
-                )
-            if pseudo_html_parts:
-                raw_html = f"<html><body>{''.join(pseudo_html_parts)}</body></html>"
-                logger.info(f"[{target_site}] DuckDuckGo search fallback succeeded. Generated {len(pseudo_html_parts)} job card snippets.")
+    for page_num in range(1, max_pages + 1):
+        # Build URL dynamically based on page number
+        if target_site == "linkedin":
+            start = (page_num - 1) * 25
+            url = f"https://www.linkedin.com/jobs/search?keywords={role_q}%20{skills_q}&location={loc_q}&start={start}"
+        elif target_site == "naukri":
+            if page_num == 1:
+                url = f"https://www.naukri.com/{role_slug}-jobs-in-{loc_slug}?k={role_q}&l={loc_q}"
             else:
-                logger.warning(f"[{target_site}] DuckDuckGo returned 0 search results.")
-        except Exception as e:
-            logger.error(f"[{target_site}] DuckDuckGo search fallback failed: {e}", exc_info=True)
+                url = f"https://www.naukri.com/{role_slug}-jobs-in-{loc_slug}-{page_num}?k={role_q}&l={loc_q}"
+        elif target_site == "indeed":
+            start = (page_num - 1) * 10
+            url = f"https://in.indeed.com/jobs?q={role_q}+{skills_q}&l={loc_q}&start={start}"
+        elif target_site == "glassdoor":
+            url = f"https://www.glassdoor.com/Job/jobs.htm?sc.keyword={role_q}&locT=C&locId={loc_q}"
+            if page_num > 1:
+                url += f"&p={page_num}"
+        elif target_site == "internshala":
+            if page_num == 1:
+                url = f"https://internshala.com/jobs/{role_slug}-jobs-in-{loc_slug}/"
+            else:
+                url = f"https://internshala.com/jobs/{role_slug}-jobs-in-{loc_slug}/page-{page_num}/"
+        elif target_site == "shine":
+            if page_num == 1:
+                url = f"https://www.shine.com/job-search/{role_slug}-jobs-in-{loc_slug}/"
+            else:
+                url = f"https://www.shine.com/job-search/{role_slug}-jobs-in-{loc_slug}/?page={page_num}"
+        elif target_site == "timesjobs":
+            url = f"https://www.timesjobs.com/candidate/job-search.html?searchType=personalizedSearch&from=submit&txtKeywords={role_q}&txtLocation={loc_q}&sequence_no={page_num}&startPage=1"
+        elif target_site == "foundit":
+            start = (page_num - 1) * 15
+            url = f"https://www.foundit.in/search/{role_slug}-jobs-in-{loc_slug}?start={start}"
+        elif target_site == "workindia":
+            url = f"https://www.workindia.in/job-search?search={role_q}&city={loc_q}"
+            if page_num > 1:
+                url += f"&page={page_num}"
+        elif target_site == "unstop":
+            url = f"https://unstop.com/jobs?search={role_q}&location={loc_q}"
+            if page_num > 1:
+                url += f"&page={page_num}"
+        elif target_site == "wellfound":
+            url = f"https://wellfound.com/jobs?q={role_q}&l={loc_q}%2C+India"
+            if page_num > 1:
+                url += f"&page={page_num}"
+        else:
+            url = f"https://www.linkedin.com/jobs/search?keywords={role_q}%20{skills_q}&location={loc_q}"
 
-    # Fallback to direct requests if search fallback was not used or returned no results
-    if not raw_html and not force_chromium:
-        logger.info(f"[{target_site}] Fetching directly via requests with browser headers...")
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Connection": "keep-alive"
+        raw_html = ""
+
+        # 1. Fetch raw HTML using hybrid method
+        if is_search_fallback:
+            logger.info(f"[{target_site}] Platform uses strong anti-bot shields. Initiating DuckDuckGo search fallback...")
+            try:
+                # Query with max_results=80 to guarantee at least 10 jobs are returned in search snippets
+                query = f"site:{target_site}.com {req.role} {req.location} jobs"
+                with DDGS() as ddgs:
+                    search_results = list(ddgs.text(query, max_results=80))
+                
+                pseudo_html_parts = []
+                for r in search_results:
+                    title = r.get("title", "")
+                    link = r.get("href", "")
+                    body = r.get("body", "")
+                    pseudo_html_parts.append(
+                        f'<div class="job-card">'
+                        f'  <a href="{link}">{title}</a>'
+                        f'  <p class="description">{body}</p>'
+                        f'</div>'
+                    )
+                if pseudo_html_parts:
+                    raw_html = f"<html><body>{''.join(pseudo_html_parts)}</body></html>"
+                    logger.info(f"[{target_site}] DuckDuckGo search fallback succeeded. Generated {len(pseudo_html_parts)} job card snippets.")
+                else:
+                    logger.warning(f"[{target_site}] DuckDuckGo returned 0 search results.")
+            except Exception as e:
+                logger.error(f"[{target_site}] DuckDuckGo search fallback failed: {e}", exc_info=True)
+
+        # Fallback to direct requests if search fallback was not used or returned no results
+        if not raw_html and not force_chromium:
+            logger.info(f"[{target_site}] Fetching directly via requests with browser headers (Page {page_num})...")
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Connection": "keep-alive"
+            }
+            try:
+                response = requests.get(url, headers=headers, timeout=10)
+                response.raise_for_status()
+                if len(response.content) > 5_000_000:
+                    raise ValueError("Response too large")
+                raw_html = response.text
+                logger.info(f"[{target_site}] Successfully fetched page content via requests. Size: {len(raw_html)} chars.")
+            except Exception as e:
+                logger.error(f"[{target_site}] Direct requests failed with error: {e}", exc_info=True)
+
+        # Ultimate fallback to ChromiumLoader if requests and search fallbacks both failed/were skipped
+        if not raw_html:
+            logger.info(f"[{target_site}] Falling back to ChromiumLoader (Page {page_num})...")
+            try:
+                loader = ChromiumLoader(
+                    [url],
+                    headless=True
+                )
+                docs = loader.load()
+                if docs and docs[0].page_content:
+                    raw_html = docs[0].page_content
+                    logger.info(f"[{target_site}] Successfully fetched page content via ChromiumLoader. Size: {len(raw_html)} chars.")
+            except Exception as e:
+                logger.error(f"[{target_site}] ChromiumLoader failed with error: {e}", exc_info=True)
+                if accumulated_jobs:
+                    break
+                raise
+
+        if not raw_html:
+            break
+
+        # 2. Filter HTML to minimize token usage
+        filtered_html = pre_filter_html(raw_html, target_site)
+        logger.info(f"[{target_site}] Raw HTML: {len(raw_html)} chars -> Filtered HTML: {len(filtered_html)} chars (Saved {((len(raw_html) - len(filtered_html)) / len(raw_html)) * 100:.2f}%)")
+
+        graph_config = {
+            "llm": {
+                "model": "deepseek/deepseek-chat",
+                "api_key": api_key,
+            },
+            "verbose": True,
+            "headless": True,
         }
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            if len(response.content) > 5_000_000:
-                raise ValueError("Response too large")
-            raw_html = response.text
-            logger.info(f"[{target_site}] Successfully fetched page content via requests. Size: {len(raw_html)} chars.")
-        except Exception as e:
-            logger.error(f"[{target_site}] Direct requests failed with error: {e}", exc_info=True)
 
-    # Ultimate fallback to ChromiumLoader if requests and search fallbacks both failed/were skipped
-    if not raw_html:
-        logger.info(f"[{target_site}] Falling back to ChromiumLoader...")
-        try:
-            loader = ChromiumLoader(
-                [url],
-                headless=True
+        if is_search_fallback:
+            base_prompt = (
+                "The input is a list of search result snippets, not a real job board page.\n"
+                "Each <div class='job-card'> is one result. Extract only these fields:\n"
+                "'title' (string), 'company' (string, best guess from snippet), \n"
+                f"'location' (string, best guess or use '{req.location}' as default),\n"
+                "'description' (string, under 15 words from the snippet body),\n"
+                "'application_link' (string, the href value from the <a> tag),\n"
+                "'salary' (null — not available in search snippets),\n"
+                "'posted_time' (null — not available in search snippets).\n"
+                "Return all results under key 'jobs'."
             )
-            docs = loader.load()
-            if docs and docs[0].page_content:
-                raw_html = docs[0].page_content
-                logger.info(f"[{target_site}] Successfully fetched page content via ChromiumLoader. Size: {len(raw_html)} chars.")
+        else:
+            base_prompt = (
+                "Extract a list of job postings from the page. "
+                "For each job, extract these precise fields: "
+                "'title' (string), 'company' (string), 'location' (string), "
+                "'salary' (string, if not found use null), "
+                "'description' (string, short summary under 15 words), "
+                "'application_link' (string, the URL to the job), "
+                "'posted_time' (string — copy the exact text shown on the page, "
+                "e.g. '2 hours ago', '3 days ago', '1 week ago'. "
+                "Do NOT convert to dates. Do NOT calculate. Use null if not shown on the page.) "
+            )
+
+            filters = []
+            if req.role:
+                filters.append(f"The job title/role must be relevant to the requested role: '{req.role}'. Reject completely unrelated fields (e.g., if user wants '{req.role}', reject jobs for 'Sales', 'SQL Developer', 'Risk Associate', 'Human Resources', etc.). Only keep jobs matching or directly related to '{req.role}'.")
+            if req.location and req.location.lower() != "any":
+                filters.append(f"The job location must match or be relevant to the requested location: '{req.location}' (or accept 'Remote' / 'Work from Home'). Reject jobs located in other physical cities if they are not remote/work-from-home.")
+            if req.work_model and req.work_model != "Any":
+                filters.append(f"If the work model is mentioned, it must align with {req.work_model}. Do not reject if it is not mentioned, only reject if it explicitly contradicts (e.g., On-site when user requests Remote).")
+            if req.experience_level and req.experience_level != "Any":
+                filters.append(f"If experience level is mentioned, it must align with {req.experience_level}. Do not reject if it is not mentioned.")
+            if req.job_type and req.job_type != "Any":
+                filters.append(f"If job type (e.g., Full-time, Part-time, Contract, Internship) is mentioned, it must align with {req.job_type}. Do not reject if it is not mentioned.")
+            if req.min_salary:
+                filters.append(f"If salary is shown as an exact number or range AND it is below {req.min_salary}, reject the job. If salary says 'competitive', 'negotiable', 'as per industry', or is not mentioned at all — keep the job.")
+            if req.visa_relocation:
+                filters.append("If mentioned, it must offer Visa Sponsorship or Relocation Assistance.")
+            if req.company_size and req.company_size != "Any":
+                filters.append(f"If company size is mentioned, it should align with {req.company_size}.")
+            if req.clearance and req.clearance != "None":
+                filters.append(f"If mentioned, it must require or mention {req.clearance} security clearance.")
+            if req.easy_apply:
+                filters.append("If mentioned, it should support 'Easy Apply' or a 1-click apply process.")
+            if req.exclude_keywords:
+                filters.append(f"MUST NOT contain any of these keywords or be from these companies: {req.exclude_keywords}")
+
+            if filters:
+                base_prompt += "\n\nCRITICAL FILTERING RULES:\n"
+                for f in filters:
+                    base_prompt += f"- {f}\n"
+                base_prompt += "- Do not reject a job posting simply because a filter criterion is missing or not mentioned in the text. Only reject if there is an explicit contradiction.\n"
+
+            base_prompt += "\nReturn the result under a key 'jobs' containing a list of these objects."
+
+        smart_scraper_graph = SmartScraperGraph(
+            prompt=base_prompt,
+            source=filtered_html,
+            config=graph_config
+        )
+
+        try:
+            result = smart_scraper_graph.run()
+            jobs = result.get("jobs", [])
         except Exception as e:
-            logger.error(f"[{target_site}] ChromiumLoader failed with error: {e}", exc_info=True)
+            logger.error(f"[{target_site}] SmartScraperGraph run failed: {e}", exc_info=True)
+            if accumulated_jobs:
+                break
             raise
 
-    # 2. Filter HTML to minimize token usage
-    filtered_html = pre_filter_html(raw_html, target_site)
-    logger.info(f"[{target_site}] Raw HTML: {len(raw_html)} chars -> Filtered HTML: {len(filtered_html)} chars (Saved {((len(raw_html) - len(filtered_html)) / len(raw_html)) * 100:.2f}%)")
+        # Post-processing and deduplication
+        page_jobs = []
+        for job in jobs:
+            job['source'] = target_site
+            if job.get('description'):
+                words = job['description'].split()
+                if len(words) > 15:
+                    job['description'] = ' '.join(words[:15]) + '...'
+            
+            # De-duplicate
+            is_dup = False
+            for existing in accumulated_jobs:
+                if (job.get('application_link') and existing.get('application_link') == job.get('application_link')) or \
+                   (existing.get('title') == job.get('title') and existing.get('company') == job.get('company')):
+                    is_dup = True
+                    break
+            if not is_dup:
+                page_jobs.append(job)
 
-    graph_config = {
-        "llm": {
-            "model": "deepseek/deepseek-chat",
-            "api_key": api_key,
-        },
-        "verbose": True,
-        "headless": True,
-    }
+        # Apply date filters to the new page jobs
+        filtered_page_jobs = filter_jobs_by_date(page_jobs, req.date_posted)
+        accumulated_jobs.extend(filtered_page_jobs)
+        logger.info(f"[{target_site}] Page {page_num} retrieved {len(filtered_page_jobs)} new filtered jobs. Total: {len(accumulated_jobs)}.")
 
-    if is_search_fallback:
-        base_prompt = (
-            "The input is a list of search result snippets, not a real job board page.\n"
-            "Each <div class='job-card'> is one result. Extract only these fields:\n"
-            "'title' (string), 'company' (string, best guess from snippet), \n"
-            f"'location' (string, best guess or use '{req.location}' as default),\n"
-            "'description' (string, under 15 words from the snippet body),\n"
-            "'application_link' (string, the href value from the <a> tag),\n"
-            "'salary' (null — not available in search snippets),\n"
-            "'posted_time' (null — not available in search snippets).\n"
-            "Return all results under key 'jobs'."
-        )
-    else:
-        base_prompt = (
-            "Extract a list of job postings from the page. "
-            "For each job, extract these precise fields: "
-            "'title' (string), 'company' (string), 'location' (string), "
-            "'salary' (string, if not found use null), "
-            "'description' (string, short summary under 15 words), "
-            "'application_link' (string, the URL to the job), "
-            "'posted_time' (string — copy the exact text shown on the page, "
-            "e.g. '2 hours ago', '3 days ago', '1 week ago'. "
-            "Do NOT convert to dates. Do NOT calculate. Use null if not shown on the page.) "
-        )
+        # Break early if we have at least 10 jobs
+        if len(accumulated_jobs) >= 10:
+            logger.info(f"[{target_site}] Reached {len(accumulated_jobs)} matching jobs (>= 10). Stopping pagination.")
+            break
 
-        filters = []
-        if req.role:
-            filters.append(f"The job title/role must be relevant to the requested role: '{req.role}'. Reject completely unrelated fields (e.g., if user wants '{req.role}', reject jobs for 'Sales', 'SQL Developer', 'Risk Associate', 'Human Resources', etc.). Only keep jobs matching or directly related to '{req.role}'.")
-        if req.location and req.location.lower() != "any":
-            filters.append(f"The job location must match or be relevant to the requested location: '{req.location}' (or accept 'Remote' / 'Work from Home'). Reject jobs located in other physical cities if they are not remote/work-from-home.")
-        if req.work_model and req.work_model != "Any":
-            filters.append(f"If the work model is mentioned, it must align with {req.work_model}. Do not reject if it is not mentioned, only reject if it explicitly contradicts (e.g., On-site when user requests Remote).")
-        if req.experience_level and req.experience_level != "Any":
-            filters.append(f"If experience level is mentioned, it must align with {req.experience_level}. Do not reject if it is not mentioned.")
-        if req.job_type and req.job_type != "Any":
-            filters.append(f"If job type (e.g., Full-time, Part-time, Contract, Internship) is mentioned, it must align with {req.job_type}. Do not reject if it is not mentioned.")
-        if req.min_salary:
-            filters.append(f"If salary is shown as an exact number or range AND it is below {req.min_salary}, reject the job. If salary says 'competitive', 'negotiable', 'as per industry', or is not mentioned at all — keep the job.")
-        if req.visa_relocation:
-            filters.append("If mentioned, it must offer Visa Sponsorship or Relocation Assistance.")
-        if req.company_size and req.company_size != "Any":
-            filters.append(f"If company size is mentioned, it should align with {req.company_size}.")
-        if req.clearance and req.clearance != "None":
-            filters.append(f"If mentioned, it must require or mention {req.clearance} security clearance.")
-        if req.easy_apply:
-            filters.append("If mentioned, it should support 'Easy Apply' or a 1-click apply process.")
-        if req.exclude_keywords:
-            filters.append(f"MUST NOT contain any of these keywords or be from these companies: {req.exclude_keywords}")
-
-        if filters:
-            base_prompt += "\n\nCRITICAL FILTERING RULES:\n"
-            for f in filters:
-                base_prompt += f"- {f}\n"
-            base_prompt += "- Do not reject a job posting simply because a filter criterion is missing or not mentioned in the text. Only reject if there is an explicit contradiction.\n"
-
-        base_prompt += "\nReturn the result under a key 'jobs' containing a list of these objects."
-
-    smart_scraper_graph = SmartScraperGraph(
-        prompt=base_prompt,
-        source=filtered_html,
-        config=graph_config
-    )
-
-    try:
-        result = smart_scraper_graph.run()
-        jobs = result.get("jobs", [])
-    except Exception as e:
-        logger.error(f"[{target_site}] SmartScraperGraph run failed: {e}", exc_info=True)
-        raise
-
-    # Post-processing
-    for job in jobs:
-        job['source'] = target_site
-        if job.get('description'):
-            words = job['description'].split()
-            if len(words) > 15:
-                job['description'] = ' '.join(words[:15]) + '...'
-
-    # Filter jobs Python-side by date
-    jobs = filter_jobs_by_date(jobs, req.date_posted)
-    return jobs
+    return accumulated_jobs
 
 def scrape_contact_info(url: str, company: str = "") -> dict:
     api_key = os.getenv("DEEPSEEK_API_KEY")

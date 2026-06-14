@@ -51,7 +51,34 @@ class SaveJobsRequest(BaseModel):
     session_name: str
 
 class ProfileSchema(BaseModel):
+    resume_text: str = ""
+    full_name: str = ""
+    title: str = ""
+    location: str = ""
+    email: str = ""
+    phone: str = ""
+    linkedin: str = ""
+    github: str = ""
+    portfolio: str = ""
+    skills: str = ""
+    bio: str = ""
+
+
+class ResumeParseRequest(BaseModel):
     resume_text: str
+
+
+class ResumeParseResponse(BaseModel):
+    full_name: str = ""
+    title: str = ""
+    location: str = ""
+    email: str = ""
+    phone: str = ""
+    linkedin: str = ""
+    github: str = ""
+    portfolio: str = ""
+    skills: str = ""
+    bio: str = ""
 
 class EmailDraftResponse(BaseModel):
     email_draft: str

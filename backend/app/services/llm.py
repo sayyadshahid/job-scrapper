@@ -30,6 +30,51 @@ def analyze_resume_match(job_desc: str, resume_text: str) -> dict:
         print(f"Error analyzing resume: {e}")
         return {"score": 0, "missing_keywords": ""}
 
+def parse_resume(resume_text: str) -> dict:
+    llm = get_llm()
+    prompt = PromptTemplate(
+        template="""You are a resume parsing expert. Extract structured information from the following resume text.
+
+Resume:
+{resume}
+
+Return ONLY a valid JSON object with these exact keys (use empty string if not found):
+- full_name: the person's full name
+- title: their professional title or headline
+- location: their location (city, state/country)
+- email: email address
+- phone: phone number
+- linkedin: LinkedIn profile URL
+- github: GitHub profile URL
+- portfolio: portfolio or personal website URL
+- skills: a comma-separated list of all skills mentioned
+- bio: a brief 2-3 sentence professional summary extracted from the resume""",
+        input_variables=["resume"]
+    )
+    chain = prompt | llm | JsonOutputParser()
+    try:
+        result = chain.invoke({"resume": resume_text})
+        return {
+            "full_name": result.get("full_name", ""),
+            "title": result.get("title", ""),
+            "location": result.get("location", ""),
+            "email": result.get("email", ""),
+            "phone": result.get("phone", ""),
+            "linkedin": result.get("linkedin", ""),
+            "github": result.get("github", ""),
+            "portfolio": result.get("portfolio", ""),
+            "skills": result.get("skills", ""),
+            "bio": result.get("bio", ""),
+        }
+    except Exception as e:
+        print(f"Error parsing resume: {e}")
+        return {
+            "full_name": "", "title": "", "location": "",
+            "email": "", "phone": "", "linkedin": "",
+            "github": "", "portfolio": "", "skills": "", "bio": ""
+        }
+
+
 def generate_cold_email(job_desc: str, resume_text: str, contact_info: str) -> str:
     llm = get_llm()
     prompt = PromptTemplate(

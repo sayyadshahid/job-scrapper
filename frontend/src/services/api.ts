@@ -12,8 +12,25 @@ export const fetchProfile = async () => {
   return res.data;
 };
 
-export const saveProfile = async (resumeText: string) => {
-  const res = await api.post('/api/profile', { resume_text: resumeText });
+export const saveProfile = async (profile: {
+  resume_text?: string;
+  full_name?: string;
+  title?: string;
+  location?: string;
+  email?: string;
+  phone?: string;
+  linkedin?: string;
+  github?: string;
+  portfolio?: string;
+  skills?: string;
+  bio?: string;
+}) => {
+  const res = await api.post('/api/profile', profile);
+  return res.data;
+};
+
+export const parseResume = async (resumeText: string) => {
+  const res = await api.post('/api/profile/parse', { resume_text: resumeText });
   return res.data;
 };
 

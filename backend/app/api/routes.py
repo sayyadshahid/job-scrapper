@@ -26,19 +26,41 @@ def scrape_jobs_endpoint(request: schemas.ScrapeRequest):
 def get_profile(db: Session = Depends(get_db)):
     profile = db.query(models.UserProfile).first()
     if not profile:
-        return {"resume_text": ""}
-    return profile
+        return schemas.ProfileSchema()
+    return schemas.ProfileSchema(
+        resume_text=profile.resume_text or "",
+        full_name=profile.full_name or "",
+        title=profile.title or "",
+        location=profile.location or "",
+        email=profile.email or "",
+        phone=profile.phone or "",
+        linkedin=profile.linkedin or "",
+        github=profile.github or "",
+        portfolio=profile.portfolio or "",
+        skills=profile.skills or "",
+        bio=profile.bio or "",
+    )
 
 @router.post("/api/profile")
 def save_profile(request: schemas.ProfileSchema, db: Session = Depends(get_db)):
     profile = db.query(models.UserProfile).first()
+    data = request.model_dump()
     if profile:
-        profile.resume_text = request.resume_text
+        for key, value in data.items():
+            setattr(profile, key, value)
     else:
-        profile = models.UserProfile(resume_text=request.resume_text)
+        profile = models.UserProfile(**data)
         db.add(profile)
     db.commit()
     return {"status": "success"}
+
+@router.post("/api/profile/parse", response_model=schemas.ResumeParseResponse)
+def parse_resume(request: schemas.ResumeParseRequest):
+    try:
+        result = llm.parse_resume(request.resume_text)
+        return schemas.ResumeParseResponse(**result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/api/jobs/save", response_model=List[schemas.JobResponse])
 def save_jobs(request: schemas.SaveJobsRequest, db: Session = Depends(get_db)):

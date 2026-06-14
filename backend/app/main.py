@@ -13,6 +13,17 @@ with engine.begin() as conn:
     conn.execute(text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contact_email VARCHAR;"))
     conn.execute(text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contact_phone VARCHAR;"))
     conn.execute(text("ALTER TABLE jobs ADD COLUMN IF NOT EXISTS contact_website VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS full_name VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS title VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS location VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS email VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS phone VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS linkedin VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS github VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS portfolio VARCHAR;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS skills TEXT;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS bio TEXT;"))
+    conn.execute(text("ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW();"))
 
 app = FastAPI(title="Job Scraper API")
 

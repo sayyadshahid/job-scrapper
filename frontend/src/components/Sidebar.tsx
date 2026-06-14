@@ -5,9 +5,10 @@ interface SidebarProps {
   setActiveTab: (tab: string) => void;
   onSearch: (payload: any) => void;
   loading: boolean;
+  isOpen?: boolean;
 }
 
-export default function Sidebar({ activeTab, setActiveTab, onSearch, loading }: SidebarProps) {
+export default function Sidebar({ activeTab, setActiveTab, onSearch, loading, isOpen }: SidebarProps) {
   const [location, setLocation] = useState("");
   const [role, setRole] = useState("");
   const [skills, setSkills] = useState("");
@@ -36,7 +37,7 @@ export default function Sidebar({ activeTab, setActiveTab, onSearch, loading }: 
   };
 
   return (
-    <aside className="sidebar" style={{ overflowY: 'auto' }}>
+    <aside className={`sidebar ${isOpen ? 'open' : ''}`}>
       <nav className="sidebar-nav">
         <button className={activeTab === "search" ? "active" : ""} onClick={() => setActiveTab("search")}>Search</button>
         <button className={activeTab === "saved" ? "active" : ""} onClick={() => setActiveTab("saved")}>History</button>

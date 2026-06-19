@@ -6,6 +6,7 @@ import ProfileTab from "../components/ProfileTab";
 import HistoryTab from "../components/HistoryTab";
 import SearchResults from "../components/SearchResults";
 import { scrapeJobs } from "../services/api";
+import PureScraperTab from "../components/PureScraperTab";
 
 export default function Home() {
   const [activeTab, setActiveTab] = useState("search");
@@ -49,6 +50,20 @@ export default function Home() {
           </button>
           <h1>Job Scraper Pro</h1>
         </div>
+        <nav style={{ display: 'flex', gap: '0.25rem', background: 'var(--background)', padding: '0.25rem', borderRadius: 'var(--radius-lg)' }}>
+          <button
+            onClick={() => setActiveTab('pure-scraper')}
+            style={{
+              padding: '0.5rem 1rem', border: 'none', borderRadius: 'var(--radius-md)',
+              background: activeTab === 'pure-scraper' ? 'var(--surface)' : 'transparent',
+              color: activeTab === 'pure-scraper' ? 'var(--primary)' : 'var(--foreground-muted)',
+              fontWeight: 600, fontSize: '0.85rem', cursor: 'pointer',
+              fontFamily: 'Inter, sans-serif', transition: 'all 0.2s ease',
+            }}
+          >
+            Pure Scraper
+          </button>
+        </nav>
       </header>
 
       <div className="dashboard-body">
@@ -81,6 +96,8 @@ export default function Home() {
           )}
 
           {activeTab === "saved" && <HistoryTab />}
+
+          {activeTab === "pure-scraper" && <PureScraperTab />}
         </main>
       </div>
     </div>

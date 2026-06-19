@@ -66,6 +66,7 @@ numpy==2.4.6
 ollama==0.6.2
 openai==2.41.0
 orjson==3.11.9
+parsel==1.10.0
 ormsgpack==1.12.2
 packaging==26.2
 playwright==1.60.0

@@ -68,3 +68,5 @@ postgres_data/
 *.njsproj
 *.sln
 *.sw?
+.env
+.env

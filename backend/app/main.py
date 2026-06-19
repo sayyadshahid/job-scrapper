@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import engine
 from app.models import base as models
 from app.api.routes import router
+from app.api.pure_scraper_routes import router as pure_scraper_router
 
 # Create DB tables
 models.Base.metadata.create_all(bind=engine)
@@ -36,3 +37,4 @@ app.add_middleware(
 )
 
 app.include_router(router)
+app.include_router(pure_scraper_router)
